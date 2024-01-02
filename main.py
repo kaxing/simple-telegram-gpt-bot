@@ -91,7 +91,7 @@ async def response_from_openai(model, messages, temperature, max_tokens):
     return openai.chat.completions.create(**params).choices[0].message.content
 
 async def command_start(update: Update, context: CallbackContext):
-    await update.message.reply_text("ℹ️Welcome to the simple chat! For the beginning: /help")
+    await update.message.reply_text("ℹ️Welcome! Go ahead and say something to start the conversation. More features can be found here: /help")
 
 @get_session_id
 async def command_reset(update: Update, context: CallbackContext, session_id):
