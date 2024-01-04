@@ -221,11 +221,15 @@ def register_handlers(application):
         1: [MessageHandler(filters.ALL & (~filters.COMMAND), handle_message)]
     })
 
-def check_telegram_api():
-    while not requests.get("https://api.telegram.org", timeout=1).status_code == 200:
-        print("The api.telegram.org is not reachable. Retrying...")
-        time.sleep(1)
-    print("The api.telegram.org is reachable.")
+def railway_dns_workaround():
+    from time import sleep
+    sleep(1.3)
+    for _ in range(3):
+        if requests.get("https://api.telegram.org", timeout=3).status_code == 200:
+            print("The api.telegram.org is reachable.")
+            return
+        print(f'The api.telegram.org is not reachable. Retrying...({_})')
+    print("Failed to reach api.telegram.org after 3 attempts.")
 
 def main():
     parser = argparse.ArgumentParser(description="Run the Telegram bot.")
@@ -235,9 +239,9 @@ def main():
         logging.basicConfig(level=logging.DEBUG)
     else:
         logging.disable(logging.WARNING)
+    railway_dns_workaround()
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     register_handlers(application)
-    check_telegram_api()
     try:
         print("The Telegram Bot will now be running in long polling mode.")
         application.run_polling()
