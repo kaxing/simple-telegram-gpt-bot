@@ -1,4 +1,4 @@
-import argparse, json, logging, os, openai
+import argparse, json, logging, os, openai, requests
 from telegram import Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackContext, filters
@@ -91,7 +91,7 @@ async def response_from_openai(model, messages, temperature, max_tokens):
     return openai.chat.completions.create(**params).choices[0].message.content
 
 async def command_start(update: Update, context: CallbackContext):
-    await update.message.reply_text("ℹ️Welcome! Go ahead and say something to start the conversation. More features can be found here: /help")
+    await update.message.reply_text("ℹ️Welcome! Go ahead and say something to start the conversation. More features can be found in this command: /help")
 
 @get_session_id
 async def command_reset(update: Update, context: CallbackContext, session_id):
@@ -221,6 +221,12 @@ def register_handlers(application):
         1: [MessageHandler(filters.ALL & (~filters.COMMAND), handle_message)]
     })
 
+def check_telegram_api():
+    while not requests.get("https://api.telegram.org", timeout=1).status_code == 200:
+        print("The api.telegram.org is not reachable. Retrying...")
+        time.sleep(1)
+    print("The api.telegram.org is reachable.")
+
 def main():
     parser = argparse.ArgumentParser(description="Run the Telegram bot.")
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
@@ -228,10 +234,15 @@ def main():
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
     else:
-        logging.disable(logging.CRITICAL)
+        logging.disable(logging.WARNING)
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     register_handlers(application)
-    application.run_polling()
+    check_telegram_api()
+    try:
+        print("The Telegram Bot will now be running in long polling mode.")
+        application.run_polling()
+    except Exception as e:
+        logging.error(f"An error occurred: {e}")
 
 if __name__ == '__main__':
     main()

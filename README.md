@@ -1,4 +1,4 @@
-A simple Telegram Chatbot using OpenAI GPT API
+A simple Telegram Chatbot using OpenAI GPT models
 ---
 
 ### One-click to start
