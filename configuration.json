@@ -1,6 +1,6 @@
 {
     "default_session_values": {
-        "model": "gpt-4o",
+        "model": "chatgpt-4o-latest",
         "temperature": 0.8,
         "max_tokens": null,
         "system_prompt": "You are a chatbot, having conversations with Telegram user.",
@@ -12,9 +12,12 @@
         "gpt-3.5-turbo-16k": ["3.5t-16k", "chatgpt-16k"],
         "gpt-4": ["4", "gpt4"],
         "gpt-4-turbo": ["4t", "gpt4-turbo"],
-        "gpt-4-turbo-preview": ["4tp", "gpt4-turbo-preview"],
-        "gpt-4-vision-preview": ["4v", "gpt4-vision-preview"],
         "gpt-4-32k": ["4-32k", "gpt4-32k"],
-        "gpt-4o": ["4o", "gpt4o"]
-    }
+        "gpt-4o": ["4o", "gpt4o"],
+        "chatgpt-4o-latest": ["4o-latest"],
+        "o1": ["o1"],
+        "o1-mini": ["o1-mini"],
+        "o3-mini": ["o3-mini"]
+    },
+    "vision_models": ["gpt-4-turbo", "gpt-4o", "chatgpt-4o-latest", "o1", "o1-mini", "o3-mini"]
 }

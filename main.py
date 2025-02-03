@@ -44,6 +44,10 @@ def relay_errors(func):
             await update.message.reply_text(f"An error occurred. e: {e}")
     return wrapper
 
+CONFIGURATION = load_configuration()
+VISION_MODELS = CONFIGURATION.get('vision_models', [])
+VALID_MODELS = CONFIGURATION.get('VALID_MODELS', {})
+
 @relay_errors
 @get_session_id
 @initialize_session_data
@@ -51,7 +55,7 @@ def relay_errors(func):
 async def handle_message(update: Update, context: CallbackContext, session_id):
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
     session_data = SESSION_DATA[session_id]
-    if update.message.photo and session_data['model'] == "gpt-4-vision-preview":
+    if update.message.photo and session_data['model'] in VISION_MODELS:
         photo = update.message.photo[-1]
         photo_file = await context.bot.get_file(photo.file_id)
         photo_url = photo_file.file_path
@@ -84,7 +88,7 @@ async def handle_message(update: Update, context: CallbackContext, session_id):
 
 async def response_from_openai(model, messages, temperature, max_tokens):
     params = {'model': model, 'messages': messages, 'temperature': temperature}
-    if model == "gpt-4-vision-preview": 
+    if model == "gpt-4-vision-preview": # legacy parameter
         max_tokens = 4096
     if max_tokens is not None: 
         params['max_tokens'] = max_tokens
@@ -125,14 +129,13 @@ async def command_set(update: Update, context: CallbackContext, session_id):
     preference, *rest = args
     preference = preference.lower()
     value = ' '.join(rest)
-    valid_models = load_configuration()['valid_models']
     if preference == 'model':
         if not value:
-            model_list = "\n".join(f"{model}: {', '.join(shorthand)}" for model, shorthand in valid_models.items())
+            model_list = "\n".join(f"{model}: {', '.join(shorthand)}" for model, shorthand in VALID_MODELS.items())
             await update.message.reply_text(f"Available models:\n{model_list}")
             return
-        if value in sum(valid_models.values(), []):
-            actual_model = next(m for m in valid_models if value in valid_models[m])
+        if value in sum(VALID_MODELS.values(), []):
+            actual_model = next(m for m in VALID_MODELS if value in VALID_MODELS[m])
             update_session_preference(session_id, 'model', actual_model)
             await command_clear(update, context)
             logging.debug(f"After model update, SESSION_DATA[{session_id}]: {SESSION_DATA[session_id]}")
@@ -180,7 +183,7 @@ async def command_show(update: Update, context: CallbackContext, session_id):
         for chat in session_data['chat_history']:
             role = chat['role'].capitalize()
             content = chat['content']
-            if isinstance(content, list):  # Handling gpt-4-vision-preview model message
+            if isinstance(content, list):  # Handling vision capable model messages
                 for item in content:
                     if item.get('type') == 'image_url':
                         message += f"  {role}: <Image sent>\n"
