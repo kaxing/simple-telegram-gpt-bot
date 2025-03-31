@@ -1,10 +1,11 @@
 import argparse, json, logging, os, openai, requests
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackContext, filters
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN') or exit("🚨Error: TELEGRAM_TOKEN is not set.")
 openai.api_key = os.getenv('OPENAI_API_KEY') or None
+WEBAPP_URL = os.getenv('WEBAPP_URL')
 SESSION_DATA = {}
 
 def load_configuration():
@@ -95,7 +96,16 @@ async def response_from_openai(model, messages, temperature, max_tokens):
     return openai.chat.completions.create(**params).choices[0].message.content
 
 async def command_start(update: Update, context: CallbackContext):
-    await update.message.reply_text("ℹ️Welcome! Go ahead and say something to start the conversation. More features can be found in this command: /help")
+    welcome_message = "ℹ️Добро пожаловать! Я ваш AI-ассистент. Чем могу помочь?"
+    
+    if WEBAPP_URL:
+        keyboard = [[InlineKeyboardButton("Открыть веб-приложение", web_app={"url": WEBAPP_URL})]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(welcome_message, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(welcome_message)
+    
+    await update.message.reply_text("ℹ️Дополнительные команды доступны через: /help")
 
 @get_session_id
 async def command_reset(update: Update, context: CallbackContext, session_id):
