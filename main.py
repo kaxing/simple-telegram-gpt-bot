@@ -1,12 +1,12 @@
 import argparse, json, logging, os, openai, requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction, ParseMode
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackContext, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackContext, CallbackQueryHandler, filters
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN') or exit("🚨Error: TELEGRAM_TOKEN is not set.")
 openai.api_key = os.getenv('OPENAI_API_KEY') or None
-WEBAPP_URL = os.getenv('WEBAPP_URL')
 SESSION_DATA = {}
+TEST_DATA = {}
 
 def load_configuration():
     with open('configuration.json', 'r') as file:
@@ -48,6 +48,20 @@ def relay_errors(func):
 CONFIGURATION = load_configuration()
 VISION_MODELS = CONFIGURATION.get('vision_models', [])
 VALID_MODELS = CONFIGURATION.get('VALID_MODELS', {})
+
+def load_test(test_name):
+    try:
+        with open(f'lessons/{test_name}.json', 'r', encoding='utf-8') as file:
+            return json.load(file)
+    except Exception as e:
+        logging.error(f"Error loading test {test_name}: {e}")
+        return None
+
+def get_test_keyboard(block):
+    keyboard = []
+    for answer in block['answers']:
+        keyboard.append([InlineKeyboardButton(answer['text'], callback_data=f"test_{answer['points']}")])
+    return InlineKeyboardMarkup(keyboard)
 
 @relay_errors
 @get_session_id
@@ -96,16 +110,7 @@ async def response_from_openai(model, messages, temperature, max_tokens):
     return openai.chat.completions.create(**params).choices[0].message.content
 
 async def command_start(update: Update, context: CallbackContext):
-    welcome_message = "ℹ️Добро пожаловать! Я ваш AI-ассистент. Чем могу помочь?"
-    
-    if WEBAPP_URL:
-        keyboard = [[InlineKeyboardButton("Открыть веб-приложение", web_app={"url": WEBAPP_URL})]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(welcome_message, reply_markup=reply_markup)
-    else:
-        await update.message.reply_text(welcome_message)
-    
-    await update.message.reply_text("ℹ️Дополнительные команды доступны через: /help")
+    await update.message.reply_text("ℹ️Welcome! Go ahead and say something to start the conversation. More features can be found in this command: /help")
 
 @get_session_id
 async def command_reset(update: Update, context: CallbackContext, session_id):
@@ -221,18 +226,72 @@ async def command_help(update: Update, context: CallbackContext):
         help_text += f"<code>{command}</code> - {description}\n"
     await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
 
+@get_session_id
+async def command_test(update: Update, context: CallbackContext, session_id):
+    test_data = load_test('autumn_personality_test')
+    if not test_data:
+        await update.message.reply_text("❌ Ошибка загрузки теста")
+        return
+    
+    TEST_DATA[session_id] = {
+        'current_block': 0,
+        'total_points': 0,
+        'test_data': test_data
+    }
+    
+    first_block = test_data['blocks'][0]
+    keyboard = get_test_keyboard(first_block)
+    await update.message.reply_text(
+        f"🎯 {test_data['title']}\n\n{first_block['question']}", 
+        reply_markup=keyboard
+    )
+
+async def handle_test_callback(update: Update, context: CallbackContext):
+    query = update.callback_query
+    await query.answer()
+    
+    session_id = str(query.from_user.id)
+    if session_id not in TEST_DATA:
+        await query.message.reply_text("❌ Ошибка: тест не был начат")
+        return
+    
+    points = int(query.data.split('_')[1])
+    TEST_DATA[session_id]['total_points'] += points
+    TEST_DATA[session_id]['current_block'] += 1
+    
+    test_data = TEST_DATA[session_id]['test_data']
+    current_block = TEST_DATA[session_id]['current_block']
+    
+    if current_block >= len(test_data['blocks']):
+        # Показываем результат
+        total_points = TEST_DATA[session_id]['total_points']
+        result = next(
+            r for r in test_data['results'] 
+            if r['range']['min'] <= total_points <= r['range']['max']
+        )
+        await query.message.reply_text(
+            f"🎉 {result['title']}\n\n{result['text']}"
+        )
+        del TEST_DATA[session_id]
+    else:
+        # Показываем следующий вопрос
+        next_block = test_data['blocks'][current_block]
+        keyboard = get_test_keyboard(next_block)
+        await query.message.reply_text(
+            next_block['question'],
+            reply_markup=keyboard
+        )
+
 def register_handlers(application):
-    application.add_handlers(handlers={ 
-        -1: [
-            CommandHandler('start', command_start),
-            CommandHandler('reset', command_reset),
-            CommandHandler('clear', command_clear),
-            CommandHandler('set', command_set),
-            CommandHandler('show', command_show),
-            CommandHandler('help', command_help)
-        ],
-        1: [MessageHandler(filters.ALL & (~filters.COMMAND), handle_message)]
-    })
+    application.add_handler(CommandHandler('start', command_start))
+    application.add_handler(CommandHandler('help', command_help))
+    application.add_handler(CommandHandler('reset', command_reset))
+    application.add_handler(CommandHandler('clear', command_clear))
+    application.add_handler(CommandHandler('set', command_set))
+    application.add_handler(CommandHandler('show', command_show))
+    application.add_handler(CommandHandler('test', command_test))
+    application.add_handler(CallbackQueryHandler(handle_test_callback, pattern='^test_'))
+    application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
 
 def railway_dns_workaround():
     from time import sleep
