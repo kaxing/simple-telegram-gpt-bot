@@ -252,46 +252,63 @@ async def handle_test_callback(update: Update, context: CallbackContext):
     
     session_id = str(query.from_user.id)
     if session_id not in TEST_DATA:
-        await query.message.reply_text("❌ Ошибка: тест не был начат")
+        await query.message.reply_text("❌ Сессия теста не найдена. Начните тест заново командой /test")
         return
     
+    test_session = TEST_DATA[session_id]
     points = int(query.data.split('_')[1])
-    TEST_DATA[session_id]['total_points'] += points
-    TEST_DATA[session_id]['current_block'] += 1
+    test_session['total_points'] += points
     
-    test_data = TEST_DATA[session_id]['test_data']
-    current_block = TEST_DATA[session_id]['current_block']
+    current_block = test_session['current_block']
+    test_data = test_session['test_data']
     
-    if current_block >= len(test_data['blocks']):
-        # Показываем результат
-        total_points = TEST_DATA[session_id]['total_points']
-        result = next(
-            r for r in test_data['results'] 
-            if r['range']['min'] <= total_points <= r['range']['max']
-        )
-        await query.message.reply_text(
-            f"🎉 {result['title']}\n\n{result['text']}"
-        )
+    # Получаем следующий блок
+    next_block_id = None
+    for answer in test_data['blocks'][current_block]['answers']:
+        if answer['points'] == points:
+            next_block_id = answer['next_block']
+            break
+    
+    if next_block_id == 'result':
+        # Определяем результат
+        result = None
+        for r in test_data['results']:
+            if r['range']['min'] <= test_session['total_points'] <= r['range']['max']:
+                result = r
+                break
+        
+        if result:
+            await query.message.reply_text(
+                f"🎉 {result['title']}\n\n{result['text']}"
+            )
+        else:
+            await query.message.reply_text("❌ Ошибка определения результата")
+        
+        # Очищаем данные теста
         del TEST_DATA[session_id]
-    else:
-        # Показываем следующий вопрос
-        next_block = test_data['blocks'][current_block]
-        keyboard = get_test_keyboard(next_block)
-        await query.message.reply_text(
-            next_block['question'],
-            reply_markup=keyboard
-        )
+        return
+    
+    # Показываем следующий вопрос
+    next_block = test_data['blocks'][next_block_id - 1]
+    keyboard = get_test_keyboard(next_block)
+    test_session['current_block'] = next_block_id - 1
+    
+    await query.message.edit_text(
+        f"🎯 {test_data['title']}\n\n{next_block['question']}",
+        reply_markup=keyboard
+    )
 
 def register_handlers(application):
-    application.add_handler(CommandHandler('start', command_start))
-    application.add_handler(CommandHandler('help', command_help))
-    application.add_handler(CommandHandler('reset', command_reset))
-    application.add_handler(CommandHandler('clear', command_clear))
-    application.add_handler(CommandHandler('set', command_set))
-    application.add_handler(CommandHandler('show', command_show))
-    application.add_handler(CommandHandler('test', command_test))
-    application.add_handler(CallbackQueryHandler(handle_test_callback, pattern='^test_'))
-    application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
+    application.add_handler(CommandHandler("start", command_start))
+    application.add_handler(CommandHandler("help", command_help))
+    application.add_handler(CommandHandler("reset", command_reset))
+    application.add_handler(CommandHandler("clear", command_clear))
+    application.add_handler(CommandHandler("set", command_set))
+    application.add_handler(CommandHandler("show", command_show))
+    application.add_handler(CommandHandler("test", command_test))
+    application.add_handler(CallbackQueryHandler(handle_test_callback, pattern="^test_"))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_message))
 
 def railway_dns_workaround():
     from time import sleep
