@@ -1,12 +1,28 @@
-import argparse, json, logging, os, openai, requests
+import argparse, json, logging, os, openai, requests, signal, sys
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackContext, CallbackQueryHandler, filters
+from telegram.error import Conflict, NetworkError
+
+# Настройка логирования
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN') or exit("🚨Error: TELEGRAM_TOKEN is not set.")
 openai.api_key = os.getenv('OPENAI_API_KEY') or None
 SESSION_DATA = {}
 TEST_DATA = {}
+application = None
+
+def signal_handler(signum, frame):
+    """Обработчик сигналов для graceful shutdown"""
+    logger.info("Получен сигнал завершения работы")
+    if application:
+        application.stop()
+    sys.exit(0)
 
 def load_configuration():
     with open('configuration.json', 'r') as file:
@@ -320,22 +336,47 @@ def railway_dns_workaround():
         print(f'The api.telegram.org is not reachable. Retrying...({_})')
     print("Failed to reach api.telegram.org after 3 attempts.")
 
-def main():
-    parser = argparse.ArgumentParser(description="Run the Telegram bot.")
-    parser.add_argument('--debug', action='store_true', help='Enable debug logging')
-    args = parser.parse_args()
-    if args.debug:
-        logging.basicConfig(level=logging.DEBUG)
+async def error_handler(update: Update, context: CallbackContext) -> None:
+    """Обработчик ошибок"""
+    logger.error(f"Произошла ошибка: {context.error}")
+    if isinstance(context.error, Conflict):
+        logger.error("Обнаружен конфликт: возможно запущено несколько экземпляров бота")
+        if update and update.effective_message:
+            await update.effective_message.reply_text(
+                "⚠️ Произошла ошибка: обнаружен конфликт с другим экземпляром бота. "
+                "Пожалуйста, подождите несколько секунд и попробуйте снова."
+            )
+    elif isinstance(context.error, NetworkError):
+        logger.error("Ошибка сети")
+        if update and update.effective_message:
+            await update.effective_message.reply_text(
+                "⚠️ Произошла ошибка сети. Пожалуйста, попробуйте позже."
+            )
     else:
-        logging.disable(logging.WARNING)
-    railway_dns_workaround()
+        if update and update.effective_message:
+            await update.effective_message.reply_text(
+                "⚠️ Произошла ошибка. Пожалуйста, попробуйте позже."
+            )
+
+def main():
+    global application
+    
+    # Регистрируем обработчики сигналов
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    # Создаем приложение
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    
+    # Регистрируем обработчики
     register_handlers(application)
-    try:
-        print("The Telegram Bot will now be running in long polling mode.")
-        application.run_polling()
-    except Exception as e:
-        logging.error(f"An error occurred: {e}")
+    
+    # Регистрируем обработчик ошибок
+    application.add_error_handler(error_handler)
+    
+    # Запускаем бота
+    logger.info("Запуск бота...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
     main()
