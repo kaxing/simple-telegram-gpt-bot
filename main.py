@@ -1,4 +1,4 @@
-import argparse, json, logging, os, openai, requests, signal, sys
+import argparse, json, logging, os, openai, requests, signal, sys, time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackContext, CallbackQueryHandler, filters
@@ -7,9 +7,47 @@ from telegram.error import Conflict, NetworkError
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('bot.log')
+    ]
 )
 logger = logging.getLogger(__name__)
+
+# Метрики для мониторинга
+class Metrics:
+    def __init__(self):
+        self.start_time = time.time()
+        self.message_count = 0
+        self.error_count = 0
+        self.test_count = 0
+        self.response_times = []
+
+    def log_message(self, response_time):
+        self.message_count += 1
+        self.response_times.append(response_time)
+        if len(self.response_times) > 100:
+            self.response_times.pop(0)
+
+    def log_error(self):
+        self.error_count += 1
+
+    def log_test(self):
+        self.test_count += 1
+
+    def get_metrics(self):
+        avg_response_time = sum(self.response_times) / len(self.response_times) if self.response_times else 0
+        uptime = time.time() - self.start_time
+        return {
+            "uptime": uptime,
+            "message_count": self.message_count,
+            "error_count": self.error_count,
+            "test_count": self.test_count,
+            "avg_response_time": avg_response_time
+        }
+
+metrics = Metrics()
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN') or exit("🚨Error: TELEGRAM_TOKEN is not set.")
 openai.api_key = os.getenv('OPENAI_API_KEY') or None
@@ -84,38 +122,57 @@ def get_test_keyboard(block):
 @initialize_session_data
 @check_api_key
 async def handle_message(update: Update, context: CallbackContext, session_id):
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-    session_data = SESSION_DATA[session_id]
-    if update.message.photo and session_data['model'] in VISION_MODELS:
-        photo = update.message.photo[-1]
-        photo_file = await context.bot.get_file(photo.file_id)
-        photo_url = photo_file.file_path
-        caption = update.message.caption or "Describe this image."
+    start_time = time.time()
+    try:
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+        session_data = SESSION_DATA[session_id]
+        
+        # Логируем входящее сообщение
+        logger.info(f"Получено сообщение от {update.effective_user.id}: {update.message.text}")
+        
+        if update.message.photo and session_data['model'] in VISION_MODELS:
+            photo = update.message.photo[-1]
+            photo_file = await context.bot.get_file(photo.file_id)
+            photo_url = photo_file.file_path
+            caption = update.message.caption or "Describe this image."
+            session_data['chat_history'].append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": caption},
+                    {"type": "image_url", "image_url": photo_url}
+                ]
+            })
+        else:
+            user_message = update.message.text
+            session_data['chat_history'].append({
+                "role": "user",
+                "content": user_message
+            })
+        
+        messages_for_api = [message for message in session_data['chat_history']]
+        response = await response_from_openai(
+            session_data['model'], 
+            messages_for_api, 
+            session_data['temperature'], 
+            session_data['max_tokens']
+        )
+        
         session_data['chat_history'].append({
-            "role": "user",
-            "content": [
-                {"type": "text", "text": caption},
-                {"type": "image_url", "image_url": photo_url}
-            ]
+            'role': 'assistant',
+            'content': response
         })
-    else:
-        user_message = update.message.text
-        session_data['chat_history'].append({
-            "role": "user",
-            "content": user_message
-        })
-    messages_for_api = [message for message in session_data['chat_history']]
-    response = await response_from_openai(
-        session_data['model'], 
-        messages_for_api, 
-        session_data['temperature'], 
-        session_data['max_tokens']
-    )
-    session_data['chat_history'].append({
-        'role': 'assistant',
-        'content': response
-    })
-    await update.message.reply_markdown(response)
+        
+        await update.message.reply_markdown(response)
+        
+        # Логируем успешное выполнение
+        response_time = time.time() - start_time
+        metrics.log_message(response_time)
+        logger.info(f"Сообщение обработано за {response_time:.2f} секунд")
+        
+    except Exception as e:
+        metrics.log_error()
+        logger.error(f"Ошибка при обработке сообщения: {e}")
+        raise
 
 async def response_from_openai(model, messages, temperature, max_tokens):
     params = {'model': model, 'messages': messages, 'temperature': temperature}
@@ -376,6 +433,7 @@ def main():
     
     # Запускаем бота
     logger.info("Запуск бота...")
+    logger.info(f"Текущие метрики: {metrics.get_metrics()}")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
