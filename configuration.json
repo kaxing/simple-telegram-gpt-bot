@@ -14,10 +14,34 @@
         "gpt-4-turbo": ["4t", "gpt4-turbo"],
         "gpt-4-32k": ["4-32k", "gpt4-32k"],
         "gpt-4o": ["4o", "gpt4o"],
+        "gpt-4o-mini": ["4o-mini", "gpt4o-mini"],
         "chatgpt-4o-latest": ["4o-latest"],
+        "gpt-4.1": ["4.1", "gpt4.1"],
+        "gpt-4.1-mini": ["4.1-mini", "gpt4.1-mini"],
+        "gpt-4.1-nano": ["4.1-nano", "gpt4.1-nano"],
+        "gpt-4.5-preview": ["4.5-preview", "gpt4.5-preview"],
         "o1": ["o1"],
         "o1-mini": ["o1-mini"],
-        "o3-mini": ["o3-mini"]
+        "o1-preview": ["o1-preview"],
+        "o1-pro": ["o1-pro"],
+        "o3": ["o3"],
+        "o3-mini": ["o3-mini"],
+        "o4-mini": ["o4-mini"]
     },
-    "vision_models": ["gpt-4-turbo", "gpt-4o", "chatgpt-4o-latest", "o1", "o1-mini", "o3-mini"]
+    "vision_models": [
+        "gpt-4-turbo", 
+        "gpt-4o", 
+        "gpt-4o-mini",
+        "chatgpt-4o-latest", 
+        "gpt-4.1",
+        "gpt-4.1-mini",
+        "gpt-4.1-nano",
+        "o1", 
+        "o1-mini", 
+        "o1-preview",
+        "o1-pro",
+        "o3",
+        "o3-mini",
+        "o4-mini"
+    ]
 }
