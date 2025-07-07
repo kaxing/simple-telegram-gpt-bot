@@ -1,11 +1,66 @@
-import argparse, json, logging, os, openai, requests
-from telegram import Update
+import argparse, json, logging, os, openai, requests, signal, sys, time
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction, ParseMode
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackContext, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackContext, CallbackQueryHandler, filters
+from telegram.error import Conflict, NetworkError
+
+# Настройка логирования
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO,
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('bot.log')
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Метрики для мониторинга
+class Metrics:
+    def __init__(self):
+        self.start_time = time.time()
+        self.message_count = 0
+        self.error_count = 0
+        self.test_count = 0
+        self.response_times = []
+
+    def log_message(self, response_time):
+        self.message_count += 1
+        self.response_times.append(response_time)
+        if len(self.response_times) > 100:
+            self.response_times.pop(0)
+
+    def log_error(self):
+        self.error_count += 1
+
+    def log_test(self):
+        self.test_count += 1
+
+    def get_metrics(self):
+        avg_response_time = sum(self.response_times) / len(self.response_times) if self.response_times else 0
+        uptime = time.time() - self.start_time
+        return {
+            "uptime": uptime,
+            "message_count": self.message_count,
+            "error_count": self.error_count,
+            "test_count": self.test_count,
+            "avg_response_time": avg_response_time
+        }
+
+metrics = Metrics()
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN') or exit("🚨Error: TELEGRAM_TOKEN is not set.")
 openai.api_key = os.getenv('OPENAI_API_KEY') or None
 SESSION_DATA = {}
+TEST_DATA = {}
+application = None
+
+def signal_handler(signum, frame):
+    """Обработчик сигналов для graceful shutdown"""
+    logger.info("Получен сигнал завершения работы")
+    if application:
+        application.stop()
+    sys.exit(0)
 
 def load_configuration():
     with open('configuration.json', 'r') as file:
@@ -48,43 +103,76 @@ CONFIGURATION = load_configuration()
 VISION_MODELS = CONFIGURATION.get('vision_models', [])
 VALID_MODELS = CONFIGURATION.get('VALID_MODELS', {})
 
+def load_test(test_name):
+    try:
+        with open(f'lessons/{test_name}.json', 'r', encoding='utf-8') as file:
+            return json.load(file)
+    except Exception as e:
+        logging.error(f"Error loading test {test_name}: {e}")
+        return None
+
+def get_test_keyboard(block):
+    keyboard = []
+    for answer in block['answers']:
+        keyboard.append([InlineKeyboardButton(answer['text'], callback_data=f"test_{answer['points']}")])
+    return InlineKeyboardMarkup(keyboard)
+
 @relay_errors
 @get_session_id
 @initialize_session_data
 @check_api_key
 async def handle_message(update: Update, context: CallbackContext, session_id):
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-    session_data = SESSION_DATA[session_id]
-    if update.message.photo and session_data['model'] in VISION_MODELS:
-        photo = update.message.photo[-1]
-        photo_file = await context.bot.get_file(photo.file_id)
-        photo_url = photo_file.file_path
-        caption = update.message.caption or "Describe this image."
+    start_time = time.time()
+    try:
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+        session_data = SESSION_DATA[session_id]
+        
+        # Логируем входящее сообщение
+        logger.info(f"Получено сообщение от {update.effective_user.id}: {update.message.text}")
+        
+        if update.message.photo and session_data['model'] in VISION_MODELS:
+            photo = update.message.photo[-1]
+            photo_file = await context.bot.get_file(photo.file_id)
+            photo_url = photo_file.file_path
+            caption = update.message.caption or "Describe this image."
+            session_data['chat_history'].append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": caption},
+                    {"type": "image_url", "image_url": photo_url}
+                ]
+            })
+        else:
+            user_message = update.message.text
+            session_data['chat_history'].append({
+                "role": "user",
+                "content": user_message
+            })
+        
+        messages_for_api = [message for message in session_data['chat_history']]
+        response = await response_from_openai(
+            session_data['model'], 
+            messages_for_api, 
+            session_data['temperature'], 
+            session_data['max_tokens']
+        )
+        
         session_data['chat_history'].append({
-            "role": "user",
-            "content": [
-                {"type": "text", "text": caption},
-                {"type": "image_url", "image_url": photo_url}
-            ]
+            'role': 'assistant',
+            'content': response
         })
-    else:
-        user_message = update.message.text
-        session_data['chat_history'].append({
-            "role": "user",
-            "content": user_message
-        })
-    messages_for_api = [message for message in session_data['chat_history']]
-    response = await response_from_openai(
-        session_data['model'], 
-        messages_for_api, 
-        session_data['temperature'], 
-        session_data['max_tokens']
-    )
-    session_data['chat_history'].append({
-        'role': 'assistant',
-        'content': response
-    })
-    await update.message.reply_markdown(response)
+        
+        await update.message.reply_markdown(response)
+        
+        # Логируем успешное выполнение
+        response_time = time.time() - start_time
+        metrics.log_message(response_time)
+        logger.info(f"Сообщение обработано за {response_time:.2f} секунд")
+        
+    except Exception as e:
+        metrics.log_error()
+        logger.error(f"Ошибка при обработке сообщения: {e}")
+        raise
 
 async def response_from_openai(model, messages, temperature, max_tokens):
     params = {'model': model, 'messages': messages, 'temperature': temperature}
@@ -211,18 +299,89 @@ async def command_help(update: Update, context: CallbackContext):
         help_text += f"<code>{command}</code> - {description}\n"
     await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
 
+@get_session_id
+async def command_test(update: Update, context: CallbackContext, session_id):
+    test_data = load_test('autumn_personality_test')
+    if not test_data:
+        await update.message.reply_text("❌ Ошибка загрузки теста")
+        return
+    
+    TEST_DATA[session_id] = {
+        'current_block': 0,
+        'total_points': 0,
+        'test_data': test_data
+    }
+    
+    first_block = test_data['blocks'][0]
+    keyboard = get_test_keyboard(first_block)
+    await update.message.reply_text(
+        f"🎯 {test_data['title']}\n\n{first_block['question']}", 
+        reply_markup=keyboard
+    )
+
+async def handle_test_callback(update: Update, context: CallbackContext):
+    query = update.callback_query
+    await query.answer()
+    
+    session_id = str(query.from_user.id)
+    if session_id not in TEST_DATA:
+        await query.message.reply_text("❌ Сессия теста не найдена. Начните тест заново командой /test")
+        return
+    
+    test_session = TEST_DATA[session_id]
+    points = int(query.data.split('_')[1])
+    test_session['total_points'] += points
+    
+    current_block = test_session['current_block']
+    test_data = test_session['test_data']
+    
+    # Получаем следующий блок
+    next_block_id = None
+    for answer in test_data['blocks'][current_block]['answers']:
+        if answer['points'] == points:
+            next_block_id = answer['next_block']
+            break
+    
+    if next_block_id == 'result':
+        # Определяем результат
+        result = None
+        for r in test_data['results']:
+            if r['range']['min'] <= test_session['total_points'] <= r['range']['max']:
+                result = r
+                break
+        
+        if result:
+            await query.message.reply_text(
+                f"🎉 {result['title']}\n\n{result['text']}"
+            )
+        else:
+            await query.message.reply_text("❌ Ошибка определения результата")
+        
+        # Очищаем данные теста
+        del TEST_DATA[session_id]
+        return
+    
+    # Показываем следующий вопрос
+    next_block = test_data['blocks'][next_block_id - 1]
+    keyboard = get_test_keyboard(next_block)
+    test_session['current_block'] = next_block_id - 1
+    
+    await query.message.edit_text(
+        f"🎯 {test_data['title']}\n\n{next_block['question']}",
+        reply_markup=keyboard
+    )
+
 def register_handlers(application):
-    application.add_handlers(handlers={ 
-        -1: [
-            CommandHandler('start', command_start),
-            CommandHandler('reset', command_reset),
-            CommandHandler('clear', command_clear),
-            CommandHandler('set', command_set),
-            CommandHandler('show', command_show),
-            CommandHandler('help', command_help)
-        ],
-        1: [MessageHandler(filters.ALL & (~filters.COMMAND), handle_message)]
-    })
+    application.add_handler(CommandHandler("start", command_start))
+    application.add_handler(CommandHandler("help", command_help))
+    application.add_handler(CommandHandler("reset", command_reset))
+    application.add_handler(CommandHandler("clear", command_clear))
+    application.add_handler(CommandHandler("set", command_set))
+    application.add_handler(CommandHandler("show", command_show))
+    application.add_handler(CommandHandler("test", command_test))
+    application.add_handler(CallbackQueryHandler(handle_test_callback, pattern="^test_"))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_message))
 
 def railway_dns_workaround():
     from time import sleep
@@ -234,22 +393,48 @@ def railway_dns_workaround():
         print(f'The api.telegram.org is not reachable. Retrying...({_})')
     print("Failed to reach api.telegram.org after 3 attempts.")
 
-def main():
-    parser = argparse.ArgumentParser(description="Run the Telegram bot.")
-    parser.add_argument('--debug', action='store_true', help='Enable debug logging')
-    args = parser.parse_args()
-    if args.debug:
-        logging.basicConfig(level=logging.DEBUG)
+async def error_handler(update: Update, context: CallbackContext) -> None:
+    """Обработчик ошибок"""
+    logger.error(f"Произошла ошибка: {context.error}")
+    if isinstance(context.error, Conflict):
+        logger.error("Обнаружен конфликт: возможно запущено несколько экземпляров бота")
+        if update and update.effective_message:
+            await update.effective_message.reply_text(
+                "⚠️ Произошла ошибка: обнаружен конфликт с другим экземпляром бота. "
+                "Пожалуйста, подождите несколько секунд и попробуйте снова."
+            )
+    elif isinstance(context.error, NetworkError):
+        logger.error("Ошибка сети")
+        if update and update.effective_message:
+            await update.effective_message.reply_text(
+                "⚠️ Произошла ошибка сети. Пожалуйста, попробуйте позже."
+            )
     else:
-        logging.disable(logging.WARNING)
-    railway_dns_workaround()
+        if update and update.effective_message:
+            await update.effective_message.reply_text(
+                "⚠️ Произошла ошибка. Пожалуйста, попробуйте позже."
+            )
+
+def main():
+    global application
+    
+    # Регистрируем обработчики сигналов
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    # Создаем приложение
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    
+    # Регистрируем обработчики
     register_handlers(application)
-    try:
-        print("The Telegram Bot will now be running in long polling mode.")
-        application.run_polling()
-    except Exception as e:
-        logging.error(f"An error occurred: {e}")
+    
+    # Регистрируем обработчик ошибок
+    application.add_error_handler(error_handler)
+    
+    # Запускаем бота
+    logger.info("Запуск бота...")
+    logger.info(f"Текущие метрики: {metrics.get_metrics()}")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
     main()
